@@ -36,7 +36,7 @@
   .tag b{color:var(--amber)}
   .controls{display:grid;gap:10px;grid-template-columns:1fr;padding:14px;margin:14px 0 16px;
     background:var(--panel);border:1px solid var(--line);border-radius:6px}
-  @media(min-width:720px){.controls{grid-template-columns:1fr auto;align-items:end}}
+  @media(min-width:720px){.controls{grid-template-columns:1fr 1fr auto;align-items:end}}
   label{display:block;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
   input{width:100%;background:#060d09;border:1px solid var(--line);color:var(--green);font-family:var(--mono);
     font-size:15px;padding:11px 12px;border-radius:4px;outline:none}
@@ -98,14 +98,16 @@
   <header class="hero">
     <div class="kicker">Public Beta · You Are Being Recorded</div>
     <div class="logo">Escape<span class="r">Route</span></div>
-    <p class="tag">They map your plates. We route you <b>past every last one of them.</b> Enter where you're fleeing —
-      Escape Route pulls the <b>real</b> surveillance cameras near you and plots the road route of maximum visibility,
-      with a co-driver to call every camera. <b>100% of your journey, on camera.</b></p>
+    <p class="tag">They map your plates. We route you <b>past every last one of them.</b> Enter a start and a destination —
+      Escape Route finds the <b>real</b> surveillance cameras between them and plots the road route of
+      <b>maximum exposure</b>, with a co-driver to call every camera. <b>100% of your journey, on camera.</b></p>
   </header>
 
   <div class="controls">
-    <div><label>Where are you escaping from? (address, city, or ZIP)</label>
-      <input id="loc" value="Times Square, New York" autocomplete="off" spellcheck="false"></div>
+    <div><label>Start — escaping from</label>
+      <input id="startLoc" value="Times Square, New York" autocomplete="off" spellcheck="false"></div>
+    <div><label>Destination — fleeing to</label>
+      <input id="destLoc" value="Brooklyn Bridge, New York" autocomplete="off" spellcheck="false"></div>
     <button class="plot" id="plotBtn">▶ Plot Escape Route</button>
   </div>
 
@@ -184,8 +186,8 @@
   }
   // resilient: try multiple Overpass mirrors (the public API 504s under load)
   const OVERPASS=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter','https://maps.mail.ru/osm/tools/overpass/api/interpreter'];
-  async function fetchCameras(lat,lon,radius){
-    const q=`[out:json][timeout:25];(node["man_made"="surveillance"](around:${radius},${lat},${lon}););out body;`;
+  async function overpassCameras(sel){
+    const q=`[out:json][timeout:25];(${sel};);out body;`;
     let lastErr;
     // public Overpass 504s / stalls under load — hard-timeout each mirror so a slow one fails over fast
     for(let round=0; round<2; round++){
@@ -217,8 +219,12 @@
     const x=Math.cos(a.lat*d2r)*Math.sin(b.lat*d2r)-Math.sin(a.lat*d2r)*Math.cos(b.lat*d2r)*Math.cos((b.lon-a.lon)*d2r);
     return (Math.atan2(y,x)/d2r+360)%360; }
   function metersBetween(a,b){ return 3959*1609.34*2*Math.asin(Math.sqrt(Math.sin((b.lat-a.lat)*d2r/2)**2+Math.cos(a.lat*d2r)*Math.cos(b.lat*d2r)*Math.sin((b.lon-a.lon)*d2r/2)**2)); }
+  const gcKm=(a,b)=>metersBetween(a,b)/1000;
+  // project C onto segment A→B: t in [0,1] along the line, and perpendicular distance in km
+  function projT(A,B,C){ const dx=B.lon-A.lon,dy=B.lat-A.lat,L2=dx*dx+dy*dy||1e-9; return ((C.lon-A.lon)*dx+(C.lat-A.lat)*dy)/L2; }
+  function perpKm(A,B,C){ const t=Math.max(0,Math.min(1,projT(A,B,C))); const px=A.lon+t*(B.lon-A.lon),py=A.lat+t*(B.lat-A.lat); return metersBetween(C,{lat:py,lon:px})/1000; }
   // rally pace notes from the route
-  function buildNotes(anchor,route){
+  function buildNotes(anchor,route,destName){
     const pts=[{lat:anchor.lat,lon:anchor.lon},...route]; const notes=['Pace notes. Maximum exposure. Ready. Go.'];
     for(let i=1;i<pts.length;i++){
       const prev=pts[i-1],cur=pts[i],cam=route[i-1];
@@ -232,53 +238,67 @@
                             : pick(['you\'re on it','smile','they see you','logged','wave']);
       notes.push(`${dstr}, ${type} ${dir}, ${flav}.`);
     }
-    notes.push('Finish. You were seen the entire way.');
+    notes.push(`Into the finish. ${destName||'Destination'} ahead. You were seen the entire way.`);
     return notes;
   }
 
   let busy=false;
+  const shortName=g=>g.name.split(',').slice(0,2).join(',').trim();
+  function pinIcon(text,color){ return L.divIcon({className:'',html:`<div style="color:${color||'#22ff9c'};font-size:15px;font-weight:700;text-shadow:0 0 6px ${color||'#22ff9c'};white-space:nowrap">${text}</div>`,iconSize:[70,16],iconAnchor:[8,8]}); }
   async function plot(){
     if(busy) return; busy=true; $('plotBtn').disabled=true; $('certBtn').disabled=true; $('tweetBtn').disabled=true; stopVoice();
-    layer.clearLayers(); $('seenBadge').textContent='SEEN: 0'; $('mapFoot').textContent='GEOCODING…';
+    layer.clearLayers(); $('seenBadge').textContent='SEEN: 0'; $('mapFoot').textContent='GEOCODING START + DESTINATION…';
     setStats('…','…','—','—','—','—'); lastNotes=[];
-    $('turnList').innerHTML='<div class="turn"><span class="n">··</span><span>Querying the surveillance grid — everywhere is watched.</span></div>';
+    $('turnList').innerHTML='<div class="turn"><span class="n">··</span><span>Locating start and destination…</span></div>';
     try{
-      const g=await geocode($('loc').value.trim());
-      state.locName=g.name.split(',').slice(0,3).join(',');
-      map.setView([g.lat,g.lon],15);
-      $('mapFoot').textContent='QUERYING SURVEILLANCE GRID…';
-      let cams=await fetchCameras(g.lat,g.lon,8000);
-      const anchor={lat:g.lat,lon:g.lon};
-      if(!cams.length){ $('mapFoot').textContent='NO MAPPED CAMERAS WITHIN 8KM — suspicious. Everywhere is watched.';
+      const A=await geocode($('startLoc').value.trim());
+      const B=await geocode($('destLoc').value.trim());
+      state.locName=shortName(A)+'  →  '+shortName(B);
+      map.fitBounds(L.latLngBounds([[A.lat,A.lon],[B.lat,B.lon]]).pad(0.3));
+      const tripKm=gcKm(A,B);
+      $('mapFoot').textContent='QUERYING SURVEILLANCE GRID ALONG ROUTE…';
+      const buf=Math.min(0.06,Math.max(0.015,tripKm*0.0025));
+      const s=Math.min(A.lat,B.lat)-buf,w=Math.min(A.lon,B.lon)-buf,n=Math.max(A.lat,B.lat)+buf,e=Math.max(A.lon,B.lon)+buf;
+      let cams=await overpassCameras(`node["man_made"="surveillance"](${s.toFixed(5)},${w.toFixed(5)},${n.toFixed(5)},${e.toFixed(5)})`);
+      const corridor=Math.max(1.2,tripKm*0.35);
+      cams=cams.filter(c=>{ const t=projT(A,B,c); return t>-0.05&&t<1.05&&perpKm(A,B,c)<corridor; })
+               .sort((x,y)=>projT(A,B,x)-projT(A,B,y));
+      L.marker([A.lat,A.lon],{icon:pinIcon('◆ START')}).addTo(layer);
+      L.marker([B.lat,B.lon],{icon:pinIcon('◆ END','#ffb000')}).addTo(layer);
+      if(!cams.length){
+        const wp0=[[A.lat,A.lon],[B.lat,B.lon]]; const snap0=await snapToRoads(wp0); const geo0=snap0?snap0.geo:wp0;
+        L.polyline(geo0,{color:'#5c7d6f',weight:2.4,dashArray:'6 6'}).addTo(layer);
+        map.fitBounds(L.polyline(geo0).getBounds().pad(0.15));
         setStats(0,0,'—','∞','—','—');
-        $('turnList').innerHTML=`<div class="turn"><span class="n">!!</span><span>No cameras mapped here yet. That does not mean you are unwatched — it means no one has logged them. Try a bigger city, or accept that the blind spot is a lie.</span></div>`;
-        return; }
-      cams.sort((a,b)=>dist(anchor,a)-dist(anchor,b));
-      const capped=cams.length>48; if(capped) cams=cams.slice(0,48);
-      const route=nnRoute(anchor,cams);
-      L.marker([anchor.lat,anchor.lon],{icon:L.divIcon({className:'',html:'<div style="color:#22ff9c;font-size:15px;text-shadow:0 0 6px #22ff9c">◆ START</div>',iconSize:[60,16],iconAnchor:[8,8]})}).addTo(layer);
+        $('mapFoot').textContent='NO MAPPED CAMERAS ALONG THIS ROUTE — a rare blind corridor. Or just unlogged.';
+        $('turnList').innerHTML='<div class="turn"><span class="n">!!</span><span>No cameras mapped between these two points yet. Enjoy the illusion of privacy, or try a denser city pair.</span></div>';
+        return;
+      }
+      if(cams.length>44){ const step=cams.length/44,keep=[]; for(let i=0;i<44;i++) keep.push(cams[Math.floor(i*step)]); cams=keep; }
+      const route=cams;
       route.forEach(c=>L.marker([c.lat,c.lon],{icon:camIcon()}).addTo(layer).bindPopup(`${c.label}${c.alpr?' · ALPR':''}`));
-      const wp=[{lat:anchor.lat,lon:anchor.lon},...route].map(p=>[p.lat,p.lon]);
-      $('mapFoot').textContent='SNAPPING ROUTE TO ROADS…';
+      const wp=[[A.lat,A.lon],...route.map(c=>[c.lat,c.lon]),[B.lat,B.lon]];
+      $('mapFoot').textContent='PLOTTING MAXIMUM-EXPOSURE ROUTE…';
       const snapped=await snapToRoads(wp);
       const geo=snapped?snapped.geo:wp;
       L.polyline(geo,{color:'#22ff9c',weight:2.6,opacity:.92}).addTo(layer);
-      map.fitBounds(L.polyline(geo).getBounds().pad(0.14));
+      map.fitBounds(L.polyline(geo).getBounds().pad(0.12));
       const alprs=route.filter(c=>c.alpr).length;
       let miles=snapped?snapped.meters/1609.34:0;
       if(!snapped){ for(let i=1;i<wp.length;i++) miles+=metersBetween({lat:wp[i-1][0],lon:wp[i-1][1]},{lat:wp[i][0],lon:wp[i][1]})/1609.34; }
+      const directMi=tripKm*0.621371;
       Object.assign(state,{cam:route.length,alpr:alprs,miles});
       setStats(route.length,alprs,'100%','0','0','0/100');
       $('seenBadge').textContent='SEEN: '+route.length;
-      $('mapFoot').textContent=`ROUTE LOCKED — ${route.length}${capped?'+':''} cameras · ${miles.toFixed(1)} mi · ${snapped?'road-routed':'direct'} · 0 blind spots`;
+      $('mapFoot').textContent=`ROUTE LOCKED — ${route.length} cameras · ${miles.toFixed(1)} mi (${directMi.toFixed(1)} mi direct) · ${snapped?'road-routed':'direct'} · 0 blind spots`;
       const list=$('turnList'); list.innerHTML='';
       route.forEach((c,i)=>{ const d=document.createElement('div'); d.className='turn';
         d.innerHTML=`<span class="n">${String(i+1).padStart(2,'0')}</span><span>${pick(ACTS)(c,i)}${c.alpr?' <b>[ALPR]</b>':''}</span>`; list.appendChild(d); });
       const arr=document.createElement('div'); arr.className='turn';
-      arr.innerHTML=`<span class="n">${String(route.length+1).padStart(2,'0')}</span><span>Arrive. You have been seen the entire way. <b>Welcome to freedom.</b></span>`; list.appendChild(arr);
-      $('turnsHdr').textContent=`Turn-by-Turn · Maximum Exposure${capped?' (nearest 48)':''}`;
+      arr.innerHTML=`<span class="n">${String(route.length+1).padStart(2,'0')}</span><span>Arrive at <b>${shortName(B)}</b>. You were seen the entire way. <b>Welcome to freedom.</b></span>`; list.appendChild(arr);
+      $('turnsHdr').textContent=`Turn-by-Turn · ${shortName(A)} → ${shortName(B)}`;
       $('certBtn').disabled=false; $('tweetBtn').disabled=false;
-      lastNotes=buildNotes(anchor,route);
+      lastNotes=buildNotes(A,route,shortName(B));
       if(voiceOn) speakNotes(lastNotes);
     }catch(err){ $('mapFoot').textContent='ERROR: '+(err.message||err)+' — even the error is being recorded.'; }
     finally{ busy=false; $('plotBtn').disabled=false; }
@@ -342,7 +362,7 @@
     const url=location.origin+location.pathname;
     window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(url)}`,'_blank','noopener');
   });
-  $('loc').addEventListener('keydown', e=>{ if(e.key==='Enter') plot(); });
+  ['startLoc','destLoc'].forEach(id=>$(id).addEventListener('keydown', e=>{ if(e.key==='Enter') plot(); }));
   $('audioTog').addEventListener('click', ()=> audioOn?stopAudio():startAudio());
   $('voiceTog').addEventListener('click', ()=>{ voiceOn=!voiceOn; $('voiceTog').classList.toggle('on',voiceOn);
     if(voiceOn){ loadVoice(); if(lastNotes.length) speakNotes(lastNotes); else $('coLine').classList.add('live'),$('coLine').textContent='🎙 Co-driver armed. Plot a route.'; }
