@@ -1,0 +1,7 @@
+{
+  "name": "escape-route",
+  "version": "1.0.0",
+  "description": "Satirical surveillance navigation — routes you past every real camera.",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}
