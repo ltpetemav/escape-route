@@ -180,16 +180,20 @@
   async function fetchCameras(lat,lon,radius){
     const q=`[out:json][timeout:25];(node["man_made"="surveillance"](around:${radius},${lat},${lon}););out body;`;
     let lastErr;
-    for(const ep of OVERPASS){
-      try{ const r=await fetch(ep,{method:'POST',body:'data='+encodeURIComponent(q)});
-        if(!r.ok){ lastErr='grid '+r.status; continue; }
-        const j=await r.json();
-        return (j.elements||[]).filter(e=>e.lat&&e.lon).map(e=>{ const t=e.tags||{};
-          const isAlpr=/alpr|anpr|number_plate|license_plate|flock/i.test((t['surveillance:type']||'')+(t['camera:type']||'')+(t.brand||'')+(t.manufacturer||''));
-          return {lat:e.lat,lon:e.lon,alpr:isAlpr,label:(isAlpr?'ALPR #':'Camera #')+String(e.id).slice(-4)}; });
-      }catch(e){ lastErr=e.message; }
+    // public Overpass 504s under load — try every mirror, then retry the whole chain with backoff
+    for(let round=0; round<3; round++){
+      for(const ep of OVERPASS){
+        try{ const r=await fetch(ep,{method:'POST',body:'data='+encodeURIComponent(q)});
+          if(!r.ok){ lastErr='grid '+r.status; continue; }
+          const j=await r.json();
+          return (j.elements||[]).filter(e=>e.lat&&e.lon).map(e=>{ const t=e.tags||{};
+            const isAlpr=/alpr|anpr|number_plate|license_plate|flock/i.test((t['surveillance:type']||'')+(t['camera:type']||'')+(t.brand||'')+(t.manufacturer||''));
+            return {lat:e.lat,lon:e.lon,alpr:isAlpr,label:(isAlpr?'ALPR #':'Camera #')+String(e.id).slice(-4)}; });
+        }catch(e){ lastErr=e.message; }
+      }
+      if(round<2){ $('mapFoot').textContent='GRID BUSY (watching everyone) — retrying…'; await new Promise(r=>setTimeout(r, 1600*(round+1))); }
     }
-    throw new Error('SURVEILLANCE GRID UNREACHABLE ('+(lastErr||'all mirrors')+')');
+    throw new Error('SURVEILLANCE GRID BUSY ('+(lastErr||'all mirrors')+') — hit Plot to try again');
   }
   function nnRoute(anchor,cams){ const pool=cams.slice(),route=[]; let cur=anchor;
     while(pool.length){ pool.sort((a,b)=>dist(cur,a)-dist(cur,b)); const nx=pool.shift(); route.push(nx); cur=nx; } return route; }
