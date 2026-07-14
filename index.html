@@ -126,7 +126,10 @@
         <div class="stat"><div class="k">Seconds Unobserved</div><div class="v bad" id="sUnseen">—</div></div>
         <div class="stat"><div class="k">Privacy Score</div><div class="v bad" id="sPriv">—</div></div>
       </div>
-      <button class="plot ghost" id="certBtn" disabled>⬇ Certificate of Maximum Exposure</button>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <button class="plot ghost" id="certBtn" disabled>⬇ Certificate</button>
+        <button class="plot ghost" id="tweetBtn" disabled style="border-color:#1d9bf0;color:#4db8ff">🐦 Post Your Exposure</button>
+      </div>
       <div class="turns">
         <h3 id="turnsHdr">Turn-by-Turn / Maximum Exposure</h3>
         <div id="turnList"><div class="turn"><span class="n">··</span><span>Awaiting a location. Everywhere is watched; pick a starting point.</span></div></div>
@@ -153,6 +156,10 @@
   const $ = id => document.getElementById(id);
   const pick = a => a[Math.floor(Math.random()*a.length)];
   const d2r = Math.PI/180;
+  const sleep = ms => new Promise(r=>setTimeout(r,ms));
+  // fetch with a hard client-side timeout — a stalled mirror must fail over, not hang forever
+  function fetchTO(url, opts, ms){ const ctl=new AbortController(); const t=setTimeout(()=>ctl.abort(), ms||10000);
+    return fetch(url, Object.assign({}, opts, {signal:ctl.signal})).finally(()=>clearTimeout(t)); }
   const ACTS = [
     (c,n)=>`Proceed to <b>${c.label}</b>. It acquires you in ${2+(n%5)}s.`,
     (c)=>`Approach the <b>${c.label}</b>. Slow to a well-documented pace.`,
@@ -171,7 +178,7 @@
   let lastNotes=[];
 
   async function geocode(q){
-    const r=await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`,{headers:{'Accept':'application/json'}});
+    const r=await fetchTO(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`,{headers:{'Accept':'application/json'}}, 9000);
     const j=await r.json(); if(!j.length) throw new Error('LOCATION NOT FOUND');
     return {lat:+j[0].lat,lon:+j[0].lon,name:j[0].display_name};
   }
@@ -180,18 +187,18 @@
   async function fetchCameras(lat,lon,radius){
     const q=`[out:json][timeout:25];(node["man_made"="surveillance"](around:${radius},${lat},${lon}););out body;`;
     let lastErr;
-    // public Overpass 504s under load — try every mirror, then retry the whole chain with backoff
-    for(let round=0; round<3; round++){
+    // public Overpass 504s / stalls under load — hard-timeout each mirror so a slow one fails over fast
+    for(let round=0; round<2; round++){
       for(const ep of OVERPASS){
-        try{ const r=await fetch(ep,{method:'POST',body:'data='+encodeURIComponent(q)});
+        try{ const r=await fetchTO(ep,{method:'POST',body:'data='+encodeURIComponent(q)}, 9000);
           if(!r.ok){ lastErr='grid '+r.status; continue; }
           const j=await r.json();
           return (j.elements||[]).filter(e=>e.lat&&e.lon).map(e=>{ const t=e.tags||{};
             const isAlpr=/alpr|anpr|number_plate|license_plate|flock/i.test((t['surveillance:type']||'')+(t['camera:type']||'')+(t.brand||'')+(t.manufacturer||''));
             return {lat:e.lat,lon:e.lon,alpr:isAlpr,label:(isAlpr?'ALPR #':'Camera #')+String(e.id).slice(-4)}; });
-        }catch(e){ lastErr=e.message; }
+        }catch(e){ lastErr = e.name==='AbortError'?'mirror timeout':e.message; }
       }
-      if(round<2){ $('mapFoot').textContent='GRID BUSY (watching everyone) — retrying…'; await new Promise(r=>setTimeout(r, 1600*(round+1))); }
+      if(round<1){ $('mapFoot').textContent='GRID BUSY (watching everyone) — retrying…'; await sleep(1500); }
     }
     throw new Error('SURVEILLANCE GRID BUSY ('+(lastErr||'all mirrors')+') — hit Plot to try again');
   }
@@ -200,7 +207,7 @@
   async function snapToRoads(latlngs){
     if(latlngs.length<2) return null;
     const coords=latlngs.map(p=>`${p[1].toFixed(6)},${p[0].toFixed(6)}`).join(';');
-    try{ const r=await fetch(`https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson&continue_straight=false`);
+    try{ const r=await fetchTO(`https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson&continue_straight=false`, {}, 9000);
       if(!r.ok) return null; const j=await r.json();
       if(j.code!=='Ok'||!j.routes||!j.routes.length) return null;
       return {geo:j.routes[0].geometry.coordinates.map(c=>[c[1],c[0]]),meters:j.routes[0].distance};
@@ -231,8 +238,10 @@
 
   let busy=false;
   async function plot(){
-    if(busy) return; busy=true; $('plotBtn').disabled=true; $('certBtn').disabled=true; stopVoice();
+    if(busy) return; busy=true; $('plotBtn').disabled=true; $('certBtn').disabled=true; $('tweetBtn').disabled=true; stopVoice();
     layer.clearLayers(); $('seenBadge').textContent='SEEN: 0'; $('mapFoot').textContent='GEOCODING…';
+    setStats('…','…','—','—','—','—'); lastNotes=[];
+    $('turnList').innerHTML='<div class="turn"><span class="n">··</span><span>Querying the surveillance grid — everywhere is watched.</span></div>';
     try{
       const g=await geocode($('loc').value.trim());
       state.locName=g.name.split(',').slice(0,3).join(',');
@@ -268,7 +277,7 @@
       const arr=document.createElement('div'); arr.className='turn';
       arr.innerHTML=`<span class="n">${String(route.length+1).padStart(2,'0')}</span><span>Arrive. You have been seen the entire way. <b>Welcome to freedom.</b></span>`; list.appendChild(arr);
       $('turnsHdr').textContent=`Turn-by-Turn · Maximum Exposure${capped?' (nearest 48)':''}`;
-      $('certBtn').disabled=false;
+      $('certBtn').disabled=false; $('tweetBtn').disabled=false;
       lastNotes=buildNotes(anchor,route);
       if(voiceOn) speakNotes(lastNotes);
     }catch(err){ $('mapFoot').textContent='ERROR: '+(err.message||err)+' — even the error is being recorded.'; }
@@ -328,6 +337,11 @@
   // ---------- wiring ----------
   $('plotBtn').addEventListener('click', plot);
   $('certBtn').addEventListener('click', makeCertificate);
+  $('tweetBtn').addEventListener('click', ()=>{
+    const text=`I plotted my Escape Route: ${state.cam} cameras, ${state.alpr} ALPRs, 100% on camera, Privacy Score 0/100. Seen the entire way. 📹`;
+    const url=location.origin+location.pathname;
+    window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(url)}`,'_blank','noopener');
+  });
   $('loc').addEventListener('keydown', e=>{ if(e.key==='Enter') plot(); });
   $('audioTog').addEventListener('click', ()=> audioOn?stopAudio():startAudio());
   $('voiceTog').addEventListener('click', ()=>{ voiceOn=!voiceOn; $('voiceTog').classList.toggle('on',voiceOn);
@@ -357,8 +371,9 @@
       x.fillStyle='#5c7d6f'; x.font='14px monospace'; x.textAlign='center'; x.fillText(b[0],bx+bw/2,by+34);
       x.fillStyle=b[2]; x.font='bold 62px monospace'; x.fillText(b[1],bx+bw/2,by+108); });
     x.fillStyle='#ffb000'; x.font='22px monospace'; x.textAlign='center'; x.fillText('This route was seen the entire way.',W/2,480);
-    x.fillStyle='#bfe6d6'; x.font='18px monospace'; x.fillText(`${state.miles.toFixed(1)} miles · 0 blind spots · 0 seconds unobserved`,W/2,512);
-    x.fillStyle='#0c6b46'; x.font='16px monospace'; x.fillText('ESCAPE ROUTE™  ·  the only way out is on camera',W/2,566);
+    x.fillStyle='#bfe6d6'; x.font='18px monospace'; x.fillText(`${state.miles.toFixed(1)} miles · 0 blind spots · 0 seconds unobserved`,W/2,508);
+    x.fillStyle='#22ff9c'; x.font='bold 20px monospace'; x.fillText(location.host || 'escape route',W/2,556);
+    x.fillStyle='#5c7d6f'; x.font='14px monospace'; x.fillText('ESCAPE ROUTE™ · the only way out is on camera',W/2,584);
     c.toBlob(async(blob)=>{ const file=new File([blob],'maximum-exposure-certificate.png',{type:'image/png'});
       if(navigator.canShare&&navigator.canShare({files:[file]})){ try{ await navigator.share({files:[file],title:'Certificate of Maximum Exposure',text:'My Escape Route was seen the entire way.'}); return; }catch(e){} }
       const u=URL.createObjectURL(blob),a=document.createElement('a'); a.href=u; a.download='maximum-exposure-certificate.png'; a.click(); setTimeout(()=>URL.revokeObjectURL(u),3000);
