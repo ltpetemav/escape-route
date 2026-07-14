@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Escape Route — The Only Way Out Is On Camera</title>
+<meta name="description" content="Satirical surveillance navigation. Enter where you're fleeing; we plot the route past every camera. 100% of your journey, on camera.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📹</text></svg>">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<style>
+  :root{
+    --bg:#05080a; --panel:#0a1116; --line:#12291f;
+    --green:#22ff9c; --green-dim:#0c6b46; --amber:#ffb000; --red:#ff3b3b;
+    --text:#bfe6d6; --muted:#5c7d6f; --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  html,body{height:100%}
+  body{background:var(--bg); color:var(--text); font-family:var(--mono); -webkit-font-smoothing:antialiased; overflow-x:hidden}
+  body::before{content:""; position:fixed; inset:0; z-index:1200; pointer-events:none;
+    background:repeating-linear-gradient(0deg, rgba(0,0,0,0) 0 2px, rgba(0,20,10,.16) 2px 3px); mix-blend-mode:multiply}
+  .wrap{max-width:1160px; margin:0 auto; padding:0 14px 60px}
+
+  .osd{display:flex; align-items:center; gap:14px; font-size:12px; letter-spacing:.05em; padding:10px 2px;
+    color:var(--green); border-bottom:1px solid var(--line); flex-wrap:wrap}
+  .rec{display:flex; align-items:center; gap:7px; color:var(--red); font-weight:700}
+  .dot{width:9px; height:9px; border-radius:50%; background:var(--red); box-shadow:0 0 8px var(--red)}
+  @media(prefers-reduced-motion:no-preference){ .dot{animation:blink 1.1s steps(1) infinite} }
+  @keyframes blink{50%{opacity:.15}}
+  .osd .sp{margin-left:auto} .osd .muted{color:var(--muted)}
+
+  header.hero{padding:26px 0 16px}
+  .kicker{font-size:11px; letter-spacing:.3em; color:var(--muted); text-transform:uppercase; margin-bottom:8px}
+  .logo{font-size:clamp(30px,7vw,60px); font-weight:800; letter-spacing:-.02em; line-height:.9; color:var(--green);
+    text-shadow:0 0 22px rgba(34,255,156,.45); text-transform:uppercase}
+  .logo .r{color:var(--text); text-shadow:none}
+  .tag{margin-top:11px; font-size:clamp(12px,2.2vw,15px); color:var(--text); max-width:64ch; line-height:1.5}
+  .tag b{color:var(--amber)}
+
+  .controls{display:grid; gap:10px; grid-template-columns:1fr; padding:14px; margin:14px 0 16px;
+    background:var(--panel); border:1px solid var(--line); border-radius:6px}
+  @media(min-width:720px){ .controls{grid-template-columns:1fr auto; align-items:end} }
+  label{display:block; font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); margin-bottom:6px}
+  input{width:100%; background:#060d09; border:1px solid var(--line); color:var(--green); font-family:var(--mono);
+    font-size:15px; padding:11px 12px; border-radius:4px; outline:none}
+  input:focus{border-color:var(--green-dim); box-shadow:0 0 0 2px rgba(34,255,156,.15)}
+  button.plot{background:var(--green); color:#04160d; font-family:var(--mono); font-weight:800; font-size:14px;
+    letter-spacing:.04em; border:none; padding:13px 22px; border-radius:4px; cursor:pointer; text-transform:uppercase;
+    box-shadow:0 0 20px rgba(34,255,156,.35); transition:transform .12s, box-shadow .12s; white-space:nowrap}
+  button.plot:hover{transform:translateY(-1px); box-shadow:0 0 30px rgba(34,255,156,.6)}
+  button.plot:disabled{opacity:.5; cursor:wait}
+  button.plot:focus-visible{outline:2px solid var(--amber); outline-offset:2px}
+
+  .main{display:grid; gap:16px; grid-template-columns:1fr}
+  @media(min-width:900px){ .main{grid-template-columns:1.55fr 1fr} }
+  .mapwrap{position:relative; border:1px solid var(--line); border-radius:6px; overflow:hidden}
+  #map{height:520px; background:#08130d; filter:saturate(.85)}
+  .brackets i{position:absolute; z-index:600; width:18px; height:18px; border:2px solid var(--green); opacity:.65; pointer-events:none}
+  .brackets .tl{top:8px;left:8px;border-right:none;border-bottom:none}
+  .brackets .tr{top:8px;right:8px;border-left:none;border-bottom:none}
+  .brackets .bl{bottom:8px;left:8px;border-right:none;border-top:none}
+  .brackets .br{bottom:8px;right:8px;border-left:none;border-top:none}
+  .mapfoot{position:absolute; z-index:600; left:12px; bottom:10px; font-size:11px; color:var(--green); letter-spacing:.06em;
+    text-shadow:0 0 6px #000; background:rgba(0,0,0,.4); padding:2px 8px; border-radius:3px; max-width:calc(100% - 24px)}
+  .seenbadge{position:absolute; z-index:600; right:12px; top:10px; font-size:12px; color:var(--amber); font-weight:700;
+    background:rgba(0,0,0,.5); padding:3px 9px; border:1px solid var(--line); border-radius:3px}
+
+  .report{display:flex; flex-direction:column; gap:12px}
+  .stats{display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line); border:1px solid var(--line); border-radius:6px; overflow:hidden}
+  .stat{background:var(--panel); padding:11px 12px}
+  .stat .k{font-size:10px; letter-spacing:.09em; text-transform:uppercase; color:var(--muted)}
+  .stat .v{font-size:21px; font-weight:800; margin-top:2px; font-variant-numeric:tabular-nums; color:var(--green)}
+  .stat .v.bad{color:var(--red)} .stat .v.warn{color:var(--amber)}
+  .turns{border:1px solid var(--line); border-radius:6px; max-height:360px; overflow-y:auto}
+  .turns h3{font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); padding:11px 14px 6px}
+  .turn{display:grid; grid-template-columns:26px 1fr; gap:10px; padding:7px 14px; font-size:13px; line-height:1.42; border-top:1px solid var(--line)}
+  .turn .n{color:var(--green-dim); font-weight:700}
+  .turn b{color:var(--amber)}
+
+  .leaflet-container{background:#08130d; font-family:var(--mono)}
+  .cam-ic{filter:drop-shadow(0 0 4px currentColor)}
+  .leaflet-popup-content-wrapper,.leaflet-popup-tip{background:#0a1116; color:var(--text); border:1px solid var(--line)}
+  .leaflet-popup-content{font-family:var(--mono); font-size:12px}
+
+  footer{margin-top:22px; padding-top:14px; border-top:1px solid var(--line); font-size:12px; color:var(--muted); line-height:1.6}
+  footer b{color:var(--text)} .glitch{color:var(--red)}
+  a{color:var(--green-dim)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="osd">
+    <span class="rec"><span class="dot"></span>REC</span>
+    <span class="muted">CAM&nbsp;01</span><span class="muted">LIVE&nbsp;FEED</span>
+    <span id="clock">--:--:--</span>
+    <span class="sp muted">ESCAPE&nbsp;ROUTE™&nbsp;·&nbsp;SURVEILLANCE&nbsp;NAVIGATION</span>
+  </div>
+
+  <header class="hero">
+    <div class="kicker">Public Beta · You Are Being Recorded</div>
+    <div class="logo">Escape<span class="r">Route</span></div>
+    <p class="tag">They map your plates. We route you <b>past every last one of them.</b> Enter where you're fleeing —
+      Escape Route pulls the <b>real</b> surveillance cameras near you and plots the path of maximum visibility.
+      <b>100% of your journey, on camera.</b></p>
+  </header>
+
+  <div class="controls">
+    <div><label>Where are you escaping from? (address, city, or ZIP)</label>
+      <input id="loc" value="Times Square, New York" autocomplete="off" spellcheck="false"></div>
+    <button class="plot" id="plotBtn">▶ Plot Escape Route</button>
+  </div>
+
+  <div class="main">
+    <div class="mapwrap">
+      <div id="map"></div>
+      <div class="brackets"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
+      <div class="seenbadge" id="seenBadge">SEEN: 0</div>
+      <div class="mapfoot" id="mapFoot">STANDBY — enter a location to expose your route</div>
+    </div>
+    <div class="report">
+      <div class="stats">
+        <div class="stat"><div class="k">Cameras On Route</div><div class="v" id="sCam">0</div></div>
+        <div class="stat"><div class="k">ALPR Scanners</div><div class="v" id="sAlpr">0</div></div>
+        <div class="stat"><div class="k">Route On Camera</div><div class="v warn" id="sPct">—</div></div>
+        <div class="stat"><div class="k">Blind Spots</div><div class="v" id="sBlind">—</div></div>
+        <div class="stat"><div class="k">Seconds Unobserved</div><div class="v bad" id="sUnseen">—</div></div>
+        <div class="stat"><div class="k">Privacy Score</div><div class="v bad" id="sPriv">—</div></div>
+      </div>
+      <div class="turns">
+        <h3 id="turnsHdr">Turn-by-Turn / Maximum Exposure</h3>
+        <div id="turnList"><div class="turn"><span class="n">··</span><span>Awaiting a location. Everywhere is watched; pick a starting point.</span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <b>Escape Route™</b> is satire. It is the anti-map — where privacy tools route you <i>around</i> surveillance,
+    this routes you <span class="glitch">directly through all of it</span>, using real camera locations from
+    <a href="https://www.openstreetmap.org" target="_blank" rel="noopener">OpenStreetMap</a> (the same open data the
+    <a href="https://deflock.me" target="_blank" rel="noopener">DeFlock</a> project maps). Please do not use this to
+    actually escape anything. You will be seen, logged, scored, and gently waved at. Camera data is community-sourced
+    and incomplete — <b>absence of a camera here is not absence of a camera there.</b>
+  </footer>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const pick = a => a[Math.floor(Math.random()*a.length)];
+  const ACTS = [
+    (c,n)=>`Proceed to <b>${c.label}</b>. It acquires you in ${2+ (n%5)}s.`,
+    (c)=>`Approach the <b>${c.label}</b>. Slow to a well-documented pace.`,
+    (c,n)=>`Pause at <b>${c.label}</b> for optimal facial capture — you're on ${2+(n%4)} feeds.`,
+    (c)=>`Loiter beneath <b>${c.label}</b>. Chin up for the record.`,
+    (c)=>`Wave at <b>${c.label}</b>. It logs the gesture and the timestamp.`,
+  ];
+
+  const map = L.map('map', { zoomControl:true, attributionControl:true }).setView([40.758,-73.9855], 15);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    maxZoom:19, subdomains:'abcd',
+    attribution:'&copy; OpenStreetMap &copy; CARTO'
+  }).addTo(map);
+
+  let layer = L.layerGroup().addTo(map);
+  const camIcon = (seen)=> L.divIcon({ className:'', html:
+    `<div class="cam-ic" style="color:${seen?'#ff3b3b':'#ffb000'};font-size:16px;line-height:16px">◉</div>`,
+    iconSize:[16,16], iconAnchor:[8,8] });
+
+  async function geocode(q){
+    const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`;
+    const r = await fetch(url, { headers:{ 'Accept':'application/json' } });
+    const j = await r.json();
+    if(!j.length) throw new Error('LOCATION NOT FOUND');
+    return { lat:+j[0].lat, lon:+j[0].lon, name:j[0].display_name };
+  }
+
+  async function fetchCameras(lat, lon, radius){
+    const q = `[out:json][timeout:25];(node["man_made"="surveillance"](around:${radius},${lat},${lon}););out body ${''};`;
+    const r = await fetch('https://overpass-api.de/api/interpreter', { method:'POST', body:'data='+encodeURIComponent(q) });
+    if(!r.ok) throw new Error('SURVEILLANCE GRID UNREACHABLE ('+r.status+')');
+    const j = await r.json();
+    return (j.elements||[]).filter(e=>e.lat&&e.lon).map(e=>{
+      const t = e.tags||{};
+      const isAlpr = /alpr|anpr|number_plate|license_plate/i.test((t['surveillance:type']||'')+ (t['camera:type']||'')+(t.brand||''));
+      const label = isAlpr ? `ALPR #${String(e.id).slice(-4)}` : `Camera #${String(e.id).slice(-4)}`;
+      return { lat:e.lat, lon:e.lon, alpr:isAlpr, label, dir:t['camera:direction']||null };
+    });
+  }
+
+  function nnRoute(anchor, cams){
+    const pool = cams.slice(); const route=[]; let cur=anchor;
+    while(pool.length){
+      pool.sort((a,b)=> dist(cur,a)-dist(cur,b));
+      const nx=pool.shift(); route.push(nx); cur=nx;
+    }
+    return route;
+  }
+  const dist=(a,b)=> Math.hypot(a.lat-b.lat, (a.lon-b.lon)*Math.cos(a.lat*Math.PI/180));
+  function haversineMi(a,b){ const R=3959,dLat=(b.lat-a.lat)*Math.PI/180,dLon=(b.lon-a.lon)*Math.PI/180,
+    s=Math.sin(dLat/2)**2+Math.cos(a.lat*Math.PI/180)*Math.cos(b.lat*Math.PI/180)*Math.sin(dLon/2)**2;
+    return 2*R*Math.asin(Math.sqrt(s)); }
+
+  let busy=false;
+  async function plot(){
+    if(busy) return; busy=true; $('plotBtn').disabled=true;
+    layer.clearLayers();
+    $('mapFoot').textContent='GEOCODING…'; $('seenBadge').textContent='SEEN: 0';
+    try{
+      const g = await geocode($('loc').value.trim());
+      map.setView([g.lat,g.lon], 15);
+      $('mapFoot').textContent='QUERYING SURVEILLANCE GRID…';
+      let cams = await fetchCameras(g.lat, g.lon, 8000);
+      const anchor = { lat:g.lat, lon:g.lon };
+      if(!cams.length){
+        $('mapFoot').textContent='NO MAPPED CAMERAS WITHIN 8KM — suspicious. Everywhere is watched.';
+        setStats(0,0,'—','∞'); $('turnList').innerHTML =
+          `<div class="turn"><span class="n">!!</span><span>No cameras mapped here yet. That does not mean you are unwatched — it means no one has logged them. Try a bigger city, or accept that the blind spot is a lie.</span></div>`;
+        return;
+      }
+      // cap to nearest 60 for a legible route
+      cams.sort((a,b)=>dist(anchor,a)-dist(anchor,b));
+      const capped = cams.length>60; if(capped) cams=cams.slice(0,60);
+      const route = nnRoute(anchor, cams);
+
+      // draw anchor
+      L.marker([anchor.lat,anchor.lon], { icon:L.divIcon({className:'',html:'<div style="color:#22ff9c;font-size:15px;text-shadow:0 0 6px #22ff9c">◆ START</div>',iconSize:[60,16],iconAnchor:[8,8]}) }).addTo(layer);
+      // draw cameras + route
+      const line=[[anchor.lat,anchor.lon]];
+      route.forEach((c,i)=>{ line.push([c.lat,c.lon]);
+        L.marker([c.lat,c.lon], { icon:camIcon(true) }).addTo(layer).bindPopup(`${c.label}${c.alpr?' · ALPR':''}`); });
+      L.polyline(line, { color:'#22ff9c', weight:2.5, opacity:.9 }).addTo(layer);
+      map.fitBounds(L.polyline(line).getBounds().pad(0.15));
+
+      const alprs = route.filter(c=>c.alpr).length;
+      let miles=0; for(let i=1;i<line.length;i++) miles+=haversineMi({lat:line[i-1][0],lon:line[i-1][1]},{lat:line[i][0],lon:line[i][1]});
+      setStats(route.length, alprs, '100%', '0');
+      $('sUnseen').textContent='0'; $('sPriv').textContent='0/100';
+      $('seenBadge').textContent='SEEN: '+route.length;
+      $('mapFoot').textContent = `ROUTE LOCKED — ${route.length}${capped?'+':''} cameras · ${miles.toFixed(1)} mi · 0 blind spots`;
+
+      const list=$('turnList'); list.innerHTML='';
+      route.forEach((c,i)=>{ const d=document.createElement('div'); d.className='turn';
+        d.innerHTML=`<span class="n">${String(i+1).padStart(2,'0')}</span><span>${pick(ACTS)(c,i)}${c.alpr?' <b>[ALPR]</b>':''}</span>`;
+        list.appendChild(d); });
+      const arr=document.createElement('div'); arr.className='turn';
+      arr.innerHTML=`<span class="n">${String(route.length+1).padStart(2,'0')}</span><span>Arrive. You have been seen the entire way. <b>Welcome to freedom.</b></span>`;
+      list.appendChild(arr);
+      $('turnsHdr').textContent = `Turn-by-Turn · Maximum Exposure${capped?' (nearest 60 shown)':''}`;
+    }catch(err){
+      $('mapFoot').textContent = 'ERROR: '+(err.message||err)+' — even the error is being recorded.';
+    }finally{ busy=false; $('plotBtn').disabled=false; }
+  }
+  function setStats(cam,alpr,pct,blind){
+    $('sCam').textContent=cam; $('sAlpr').textContent=alpr; $('sPct').textContent=pct;
+    $('sBlind').textContent=blind; if(pct==='—'){$('sUnseen').textContent='—';$('sPriv').textContent='—';}
+  }
+
+  $('plotBtn').addEventListener('click', plot);
+  $('loc').addEventListener('keydown', e=>{ if(e.key==='Enter') plot(); });
+  function tick(){ const d=new Date(); $('clock').textContent=d.toTimeString().slice(0,8); }
+  tick(); setInterval(tick,1000);
+  plot(); // auto-run default location
+})();
+</script>
+</body>
+</html>
